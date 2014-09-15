@@ -1,0 +1,84 @@
+#!/bin/sh
+pkgname="$1"
+username="$2"
+password="$3"
+
+if [ "${pkgname}" = "" ]; then
+  echo "Usage: aur-buildbot PKGNAME [USERNAME] [PASSWORD]"
+  exit 1
+fi
+
+dir="/tmp/aur-buildbot"
+mkdir -p "${dir}"
+cd "${dir}"
+
+pkgurl="https://aur.archlinux.org/packages/${pkgname:0:2}/${pkgname}/${pkgname}.tar.gz"
+wget -q "${pkgurl}" -O "${pkgname}.tar.gz"
+tar xf "${pkgname}.tar.gz"
+
+cd "${pkgname}"
+oldver=$(grep -m 1 pkgver PKGBUILD | sed 's/pkgver=//' | sed 's/"//g')
+makepkg -o > makepkg_update.log 2>&1
+newver=$(grep -m 1 pkgver PKGBUILD | sed 's/pkgver=//' | sed 's/"//g')
+
+#oldver=$newver
+if [ "${oldver}" = "${newver}" ]; then
+  echo "${pkgname} is up-to-date (${newver})"
+  exit 0
+fi
+
+echo "${pkgname} is out-of-date (${oldver}  ->  ${newver})"
+echo -e "Building...\c"
+
+makepkg > makepkg.log 2>&1
+
+if [ $? != 0 ]; then
+  if [ $(grep -c "already been built" makepkg.log) > 0 ]; then
+    echo "Using previously built package."
+  else
+    echo "Build failed. See makepkg.log for details."
+    exit 1
+  fi
+else
+  echo "done."
+fi
+
+pkgfile=$(find . -maxdepth 1 -name \*.pkg.tar.xz)
+echo -e "Checking package with namcap... \c"
+namcap ${pkgfile} > namcap.log 2>&1
+
+nerr=$(grep -c "${pkgname} E:" namcap.log)
+nwar=$(grep -c "${pkgname} W:" namcap.log)
+
+echo "identified ${nerr} errors and ${nwar} warnings."
+if [ ${nerr} != "0" ]; then
+  echo "Exiting due to namcap errors. See namcap.log for details."
+  exit 1
+fi
+
+echo -e "Generating source tarball... \c"
+mkaurball -f > mkaurball.log 2>&1
+
+if [ $? != 0 ]; then
+  echo "error generating tarball. See mkaurball.log for details."
+  exit 1
+else
+  echo "done."
+fi
+
+if [ "${username}" = "" ] || [ "${password}" = "" ]; then
+  echo "AUR username and password not supplied. Skipping upload."
+  exit 0
+fi
+
+echo -e "Uploading tarball to AUR... \c"
+burp -u "${username}" -p "${password}" "${pkgname}-${pkgver}-1.src.tar.xz" > burp.log 2>&1
+if [ $? != 0 ]; then
+  echo "Upload failed. See burp.log for details."
+  exit 1
+else
+  echo "Upload complete."
+  exit 0
+fi
+
+
